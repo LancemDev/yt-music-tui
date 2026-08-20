@@ -1,4 +1,5 @@
 using Ratatui;
+using YtMusicTui.Auth;
 using YtMusicTui.Config;
 using YtMusicTui.Services.Abstractions;
 using YtMusicTui.UI.Layout;
@@ -12,6 +13,7 @@ public sealed class MusicApp : IDisposable
     private readonly AppConfig _config;
     private readonly IMusicService _music;
     private readonly IPlayerService _player;
+    private readonly AuthSession _auth;
     private readonly AppState _state = new();
     private readonly Dictionary<Screen, IView> _views;
     private readonly Terminal _term = new();
@@ -19,11 +21,12 @@ public sealed class MusicApp : IDisposable
     private bool _needsRedraw = true;
     private DateTime _lastTick = DateTime.UtcNow;
 
-    public MusicApp(AppConfig config, IMusicService music, IPlayerService player)
+    public MusicApp(AppConfig config, IMusicService music, IPlayerService player, AuthSession auth)
     {
         _config = config;
         _music = music;
         _player = player;
+        _auth = auth;
         _views = new Dictionary<Screen, IView>
         {
             [Screen.Home] = new HomeView(),
@@ -31,6 +34,9 @@ public sealed class MusicApp : IDisposable
             [Screen.Library] = new LibraryView(),
             [Screen.Queue] = new QueueView(),
         };
+
+        _state.IsAuthenticated = auth.IsAuthenticated;
+        _state.AuthLabel = auth.StatusLabel;
     }
 
     public async Task RunAsync(CancellationToken ct = default)
@@ -68,7 +74,9 @@ public sealed class MusicApp : IDisposable
     {
         _state.HomeTracks = await _music.GetHomeAsync(ct);
         _state.LibraryPlaylists = await _music.GetLibraryPlaylistsAsync(ct);
-        _state.StatusMessage = "Loaded demo catalog";
+        _state.StatusMessage = _auth.IsAuthenticated
+            ? $"Auth OK · {_auth.StatusDetail}"
+            : $"Auth: {_auth.StatusLabel} · {_auth.StatusDetail}";
         _needsRedraw = true;
     }
 

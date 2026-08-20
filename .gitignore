@@ -6,6 +6,12 @@
 # dotenv files
 .env
 
+# YouTube Music auth secrets (never commit)
+cookies.txt
+**/cookies.txt
+**/session.json
+browser.json
+
 # User-specific files
 *.rsuser
 *.suo

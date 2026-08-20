@@ -17,7 +17,7 @@ public static class HeaderBar
         };
 
         using var widget = new Tabs()
-            .Title($"{appName}  ·  {state.StatusMessage}", border: true)
+            .Title($"{appName}  ·  [{state.AuthLabel}]  ·  {state.StatusMessage}", border: true)
             .Titles("1 Home", "2 Search", "3 Library", "4 Queue")
             .Selected(tabs);
 

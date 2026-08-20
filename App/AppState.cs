@@ -30,6 +30,9 @@ public sealed class AppState
     public TimeSpan Position { get; set; }
     public TimeSpan Duration { get; set; }
 
+    public string AuthLabel { get; set; } = "not signed in";
+    public bool IsAuthenticated { get; set; }
+
     public float ProgressRatio =>
         Duration > TimeSpan.Zero
             ? Math.Clamp((float)(Position.TotalSeconds / Duration.TotalSeconds), 0f, 1f)
