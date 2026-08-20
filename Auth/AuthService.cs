@@ -131,6 +131,37 @@ public sealed class AuthService
         }
     }
 
+    public AuthSession SaveCookiesFromHeader(string cookieHeader)
+    {
+        var cookies = CookieFileParser.ParseHeader(cookieHeader);
+        if (cookies.Count == 0)
+            throw new InvalidDataException("No cookies could be parsed from the header.");
+
+        if (!CookieFileParser.HasAuthCookies(cookies))
+            throw new InvalidDataException(
+                "Header parsed but is missing SAPISID / __Secure-3PAPISID. Copy the Cookie header while signed into music.youtube.com.");
+
+        AuthPaths.EnsureConfigDirectory();
+        File.WriteAllText(_cookiesPath, cookieHeader.Trim() + Environment.NewLine);
+
+        var file = SessionStore.LoadOrDefault(_sessionPath);
+        file.CookiesPath = _cookiesPath;
+        if (string.IsNullOrWhiteSpace(file.GeographicalLocation))
+            file.GeographicalLocation = _geographicalLocation;
+        SessionStore.Save(_sessionPath, file);
+
+        return new AuthSession
+        {
+            Cookies = cookies,
+            VisitorData = file.VisitorData,
+            PoToken = file.PoToken,
+            GeographicalLocation = file.GeographicalLocation,
+            CookiesPath = _cookiesPath,
+            Status = AuthStatus.Authenticated,
+            StatusDetail = $"Saved {cookies.Count} cookies → {_cookiesPath}"
+        };
+    }
+
     public AuthSession ImportCookies(string sourcePath)
     {
         if (!File.Exists(sourcePath))

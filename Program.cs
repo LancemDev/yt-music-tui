@@ -14,22 +14,71 @@ var authService = new AuthService(
 
 if (args.Length > 0)
 {
-    var code = await RunCliAsync(args, authService);
+    var code = await RunCliAsync(args, authService, config);
     Environment.Exit(code);
     return;
 }
 
-var session = await authService.LoadAsync();
+using var cts = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    cts.Cancel();
+};
+
+var session = await EnsureAuthenticatedAsync(authService, config, forceLogin: false, cts.Token);
 var music = new MockMusicService();
 var player = new MockPlayerService();
 
 using var app = new MusicApp(config, music, player, session);
-await app.RunAsync();
+await app.RunAsync(cts.Token);
 
-static async Task<int> RunCliAsync(string[] args, AuthService auth)
+static async Task<AuthSession> EnsureAuthenticatedAsync(
+    AuthService auth,
+    AppConfig config,
+    bool forceLogin,
+    CancellationToken ct)
+{
+    if (!forceLogin && !config.ForceBrowserLogin)
+    {
+        var existing = await auth.LoadAsync(ct);
+        if (existing.IsAuthenticated)
+            return existing;
+
+        if (!config.PromptLoginOnStartup)
+        {
+            Console.WriteLine($"Starting without auth ({existing.StatusLabel}): {existing.StatusDetail}");
+            return existing;
+        }
+
+        Console.WriteLine($"Not authenticated ({existing.StatusLabel}). Starting browser sign-in…");
+    }
+
+    await using var flow = new BrowserAuthFlow(auth);
+    return await flow.RunAsync(ct);
+}
+
+static async Task<int> RunCliAsync(string[] args, AuthService auth, AppConfig config)
 {
     switch (args[0])
     {
+        case "--login":
+        case "login":
+        {
+            using var cts = new CancellationTokenSource();
+            Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+            try
+            {
+                var session = await EnsureAuthenticatedAsync(auth, config, forceLogin: true, cts.Token);
+                PrintSession(session);
+                return session.IsAuthenticated ? 0 : 1;
+            }
+            catch (OperationCanceledException)
+            {
+                Console.Error.WriteLine("Login cancelled.");
+                return 130;
+            }
+        }
         case "--auth-status":
         case "auth-status":
         {
@@ -89,13 +138,17 @@ static void PrintHelp()
     Console.WriteLine("""
         yt-music-tui
 
-          (no args)                 Start the TUI
+          (no args)                 Start TUI (opens browser login if needed)
+          --login                   Force browser sign-in flow
           --auth-status             Load cookies and validate auth
           --import-cookies <path>   Copy cookie file into config and validate
           --help                    Show this help
 
-        Cookie file formats: Netscape cookies.txt, Cookie header string, or JSON array.
-        Default path: ~/.config/yt-music-tui/cookies.txt
-        Override with YT_MUSIC_COOKIES.
+        On first run (or expired cookies), the app opens a local page that
+        redirects you to YouTube Music sign-in, then asks for a Cookie header.
+
+        Env:
+          YT_MUSIC_COOKIES          Cookie file path
+          YT_MUSIC_SKIP_LOGIN=1     Do not open browser login on startup
         """);
 }

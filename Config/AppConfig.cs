@@ -8,6 +8,8 @@ public sealed class AppConfig
     public string? CookiesPath { get; init; }
     public string? SessionPath { get; init; }
     public bool ValidateAuthOnStartup { get; init; } = true;
+    public bool PromptLoginOnStartup { get; init; } = true;
+    public bool ForceBrowserLogin { get; init; }
 
     public static AppConfig Load()
     {
@@ -18,6 +20,10 @@ public sealed class AppConfig
             GeographicalLocation = Environment.GetEnvironmentVariable("YT_MUSIC_GEO") ?? "US",
             ValidateAuthOnStartup = !string.Equals(
                 Environment.GetEnvironmentVariable("YT_MUSIC_SKIP_AUTH_CHECK"),
+                "1",
+                StringComparison.Ordinal),
+            PromptLoginOnStartup = !string.Equals(
+                Environment.GetEnvironmentVariable("YT_MUSIC_SKIP_LOGIN"),
                 "1",
                 StringComparison.Ordinal)
         };
