@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using YouTubeMusicAPI.Client;
 
 namespace YtMusicTui.Auth;
@@ -131,6 +132,24 @@ public sealed class AuthService
         }
     }
 
+    public AuthSession SaveCookies(IReadOnlyList<Cookie> cookies)
+    {
+        if (cookies.Count == 0)
+            throw new InvalidDataException("No cookies were found.");
+
+        if (!CookieFileParser.HasAuthCookies(cookies))
+            throw new InvalidDataException(
+                "No usable session found (missing SAPISID / __Secure-3PAPISID).");
+
+        AuthPaths.EnsureConfigDirectory();
+        var json = JsonSerializer.Serialize(
+            cookies.Select(c => new CookieJson(c.Name, c.Value, c.Domain, c.Path, c.Secure)),
+            JsonOptions);
+        File.WriteAllText(_cookiesPath, json);
+
+        return PersistCookieSession(cookies, $"Saved {cookies.Count} cookies → {_cookiesPath}");
+    }
+
     public AuthSession SaveCookiesFromHeader(string cookieHeader)
     {
         var cookies = CookieFileParser.ParseHeader(cookieHeader);
@@ -144,6 +163,11 @@ public sealed class AuthService
         AuthPaths.EnsureConfigDirectory();
         File.WriteAllText(_cookiesPath, cookieHeader.Trim() + Environment.NewLine);
 
+        return PersistCookieSession(cookies, $"Saved {cookies.Count} cookies → {_cookiesPath}");
+    }
+
+    private AuthSession PersistCookieSession(IReadOnlyList<Cookie> cookies, string statusDetail)
+    {
         var file = SessionStore.LoadOrDefault(_sessionPath);
         file.CookiesPath = _cookiesPath;
         if (string.IsNullOrWhiteSpace(file.GeographicalLocation))
@@ -158,9 +182,17 @@ public sealed class AuthService
             GeographicalLocation = file.GeographicalLocation,
             CookiesPath = _cookiesPath,
             Status = AuthStatus.Authenticated,
-            StatusDetail = $"Saved {cookies.Count} cookies → {_cookiesPath}"
+            StatusDetail = statusDetail
         };
     }
+
+    private sealed record CookieJson(string Name, string Value, string Domain, string Path, bool Secure);
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
 
     public AuthSession ImportCookies(string sourcePath)
     {

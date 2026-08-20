@@ -126,7 +126,7 @@ public static class CookieFileParser
            text.Contains("Netscape", StringComparison.OrdinalIgnoreCase) ||
            text.Contains("#HttpOnly_", StringComparison.OrdinalIgnoreCase);
 
-    private static Cookie CreateCookie(
+    internal static Cookie CreateCookie(
         string name,
         string value,
         string? domain = null,

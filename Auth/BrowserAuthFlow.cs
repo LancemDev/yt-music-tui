@@ -1,236 +1,109 @@
 using System.Diagnostics;
-using System.Net;
-using System.Text;
-using System.Web;
+using System.Text.RegularExpressions;
 
 namespace YtMusicTui.Auth;
 
 /// <summary>
-/// Interactive browser auth for Linux/macOS/Windows TUIs.
-/// Opens a local page that sends the user to YouTube Music sign-in, then accepts
-/// a pasted Cookie header (HttpOnly cookies cannot be read from page JS).
+/// Interactive sign-in for the TUI: opens music.youtube.com directly (it redirects to Google's
+/// own current sign-in flow if needed — no locally-hosted page, and no hand-built Google auth
+/// URL to go stale), then auto-detects the resulting session cookie from the user's browser
+/// profile. Falls back to a terminal paste prompt if auto-detection doesn't find anything.
 /// </summary>
-public sealed class BrowserAuthFlow : IAsyncDisposable
+public sealed class BrowserAuthFlow
 {
-    public const string SignInUrl =
-        "https://accounts.google.com/ServiceLogin?service=youtube&uilel=3&passive=1&continue=https%3A%2F%2Fmusic.youtube.com%2F&hl=en";
+    public const string SignInUrl = "https://music.youtube.com/";
 
     private readonly AuthService _auth;
-    private HttpListener? _listener;
-    private int _port;
 
     public BrowserAuthFlow(AuthService auth) => _auth = auth;
 
     public async Task<AuthSession> RunAsync(CancellationToken ct = default)
     {
-        _port = FindFreePort();
-        var baseUrl = $"http://127.0.0.1:{_port}/";
-
-        _listener = new HttpListener();
-        _listener.Prefixes.Add(baseUrl);
-        _listener.Start();
-
-        var completion = new TaskCompletionSource<AuthSession>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var reg = ct.Register(() => completion.TrySetCanceled(ct));
-
         Console.WriteLine();
         Console.WriteLine("Authentication required for YouTube Music.");
-        Console.WriteLine($"Opening browser → {baseUrl}");
-        Console.WriteLine("Complete sign-in in the browser, then paste your Cookie header on that page.");
-        Console.WriteLine("Press Ctrl+C to cancel.");
+        Console.WriteLine("Press Enter to open YouTube Music in your browser…");
+        await WaitForKeyAsync(ct).ConfigureAwait(false);
+
+        OpenBrowser(SignInUrl);
+
         Console.WriteLine();
+        Console.WriteLine("Sign in there if prompted, then make sure the tab lands on music.youtube.com.");
+        Console.WriteLine("Press Enter here once you're signed in…");
+        await WaitForKeyAsync(ct).ConfigureAwait(false);
 
-        OpenBrowser(baseUrl);
+        Console.WriteLine("Looking for your session in Chrome, Chromium, Brave, Edge, and Firefox…");
+        var detected = BrowserCookieReader.TryReadYouTubeCookies(out var source);
 
-        var listenTask = ListenAsync(completion, ct);
-        var session = await completion.Task.ConfigureAwait(false);
-        await listenTask.ConfigureAwait(false);
-        return session;
-    }
-
-    private async Task ListenAsync(TaskCompletionSource<AuthSession> completion, CancellationToken ct)
-    {
-        if (_listener is null) return;
-
-        try
+        AuthSession? imported = null;
+        if (detected is { Count: > 0 })
         {
-            while (!ct.IsCancellationRequested && !completion.Task.IsCompleted)
+            try
             {
-                var contextTask = _listener.GetContextAsync();
-                var finished = await Task.WhenAny(contextTask, completion.Task).ConfigureAwait(false);
-                if (finished != contextTask)
-                    break;
-
-                var context = await contextTask.ConfigureAwait(false);
-                _ = Task.Run(() => HandleRequestAsync(context, completion), ct);
+                Console.WriteLine($"Found a signed-in session via {source}.");
+                imported = _auth.SaveCookies(detected);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Auto-detected session looked invalid: {ex.Message}");
             }
         }
-        catch (ObjectDisposedException)
+
+        if (imported is null)
         {
-            // Listener stopped.
-        }
-        catch (HttpListenerException)
-        {
-            // Listener stopped.
-        }
-    }
+            Console.WriteLine(detected is { Count: > 0 } ? "" : "Couldn't auto-detect a session from your browsers.");
+            Console.WriteLine("Open DevTools (F12) → Network → any music.youtube.com request → copy the 'Cookie' request header.");
 
-    private async Task HandleRequestAsync(HttpListenerContext context, TaskCompletionSource<AuthSession> completion)
-    {
-        try
-        {
-            var req = context.Request;
-            var res = context.Response;
-            var path = req.Url?.AbsolutePath.TrimEnd('/') ?? "";
-
-            if (req.HttpMethod == "GET" && (path is "" or "/"))
+            for (var attempt = 0; attempt < 3 && imported is null; attempt++)
             {
-                await WriteHtmlAsync(res, BuildLandingHtml()).ConfigureAwait(false);
-                return;
-            }
-
-            if (req.HttpMethod == "GET" && path == "/signin")
-            {
-                res.StatusCode = 302;
-                res.RedirectLocation = SignInUrl;
-                res.Close();
-                return;
-            }
-
-            if (req.HttpMethod == "POST" && path == "/submit")
-            {
-                using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
-                var body = await reader.ReadToEndAsync().ConfigureAwait(false);
-                var form = HttpUtility.ParseQueryString(body);
-                var cookieHeader = form["cookies"]?.Trim() ?? "";
-
-                if (string.IsNullOrWhiteSpace(cookieHeader))
-                {
-                    await WriteHtmlAsync(res, BuildLandingHtml(error: "Cookie header was empty.")).ConfigureAwait(false);
-                    return;
-                }
-
+                Console.Write("Paste it here: ");
+                var header = await ReadLineAsync(ct).ConfigureAwait(false);
                 try
                 {
-                    var imported = _auth.SaveCookiesFromHeader(cookieHeader);
-                    Console.WriteLine("Cookies received. Validating with YouTube Music…");
-                    var validated = await _auth.ValidateAsync(imported).ConfigureAwait(false);
-
-                    if (!validated.IsAuthenticated)
-                    {
-                        await WriteHtmlAsync(
-                            res,
-                            BuildLandingHtml(error: $"Validation failed: {validated.StatusDetail}")).ConfigureAwait(false);
-                        return;
-                    }
-
-                    await WriteHtmlAsync(res, BuildSuccessHtml()).ConfigureAwait(false);
-                    completion.TrySetResult(validated);
+                    imported = _auth.SaveCookiesFromHeader(header ?? "");
                 }
                 catch (Exception ex)
                 {
-                    await WriteHtmlAsync(res, BuildLandingHtml(error: ex.Message)).ConfigureAwait(false);
+                    Console.WriteLine($"{ex.Message} Try again.");
                 }
-
-                return;
             }
-
-            res.StatusCode = 404;
-            await WriteTextAsync(res, "Not found").ConfigureAwait(false);
         }
-        catch (Exception ex)
+
+        if (imported is null)
         {
-            Console.Error.WriteLine($"Auth server error: {ex.Message}");
-            try { context.Response.Abort(); } catch { /* ignore */ }
+            Console.WriteLine("Giving up after repeated invalid input.");
+            return await _auth.LoadAsync(ct).ConfigureAwait(false);
         }
+
+        Console.WriteLine("Validating with YouTube Music…");
+        var validated = await _auth.ValidateAsync(imported, ct).ConfigureAwait(false);
+
+        Console.WriteLine(validated.IsAuthenticated
+            ? "Signed in."
+            : $"Sign-in saved but validation failed: {validated.StatusDetail}");
+
+        return validated;
     }
 
-    private static async Task WriteHtmlAsync(HttpListenerResponse res, string html)
+    private static Task WaitForKeyAsync(CancellationToken ct) => ReadLineAsync(ct);
+
+    private static async Task<string?> ReadLineAsync(CancellationToken ct)
     {
-        var bytes = Encoding.UTF8.GetBytes(html);
-        res.StatusCode = 200;
-        res.ContentType = "text/html; charset=utf-8";
-        res.ContentLength64 = bytes.Length;
-        await res.OutputStream.WriteAsync(bytes).ConfigureAwait(false);
-        res.Close();
+        var readTask = Task.Run(Console.ReadLine, ct);
+        var cancelSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var reg = ct.Register(() => cancelSignal.TrySetResult());
+
+        var finished = await Task.WhenAny(readTask, cancelSignal.Task).ConfigureAwait(false);
+        if (finished != readTask)
+            throw new OperationCanceledException(ct);
+
+        return await readTask.ConfigureAwait(false);
     }
 
-    private static async Task WriteTextAsync(HttpListenerResponse res, string text)
-    {
-        var bytes = Encoding.UTF8.GetBytes(text);
-        res.ContentType = "text/plain; charset=utf-8";
-        res.ContentLength64 = bytes.Length;
-        await res.OutputStream.WriteAsync(bytes).ConfigureAwait(false);
-        res.Close();
-    }
-
-    private static string BuildLandingHtml(string? error = null)
-    {
-        var errorBlock = string.IsNullOrEmpty(error)
-            ? ""
-            : $"<p class=\"error\">{HttpUtility.HtmlEncode(error)}</p>";
-
-        return $$"""
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-              <meta charset="utf-8" />
-              <meta name="viewport" content="width=device-width, initial-scale=1" />
-              <title>YT Music TUI · Sign in</title>
-              <style>
-                :root { color-scheme: dark; }
-                body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; background: #111; color: #eee; line-height: 1.5; }
-                a.button, button { display: inline-block; background: #f00; color: #fff; border: 0; padding: .7rem 1.1rem; border-radius: 6px; text-decoration: none; font-weight: 600; cursor: pointer; }
-                a.button.secondary { background: #333; margin-left: .5rem; }
-                ol { padding-left: 1.2rem; }
-                textarea { width: 100%; min-height: 9rem; margin: .75rem 0; padding: .75rem; border-radius: 6px; border: 1px solid #444; background: #1a1a1a; color: #eee; font-family: ui-monospace, monospace; }
-                .error { color: #ff8a8a; background: #3a1515; padding: .75rem; border-radius: 6px; }
-                code { background: #222; padding: .1rem .35rem; border-radius: 4px; }
-                .hint { color: #aaa; font-size: .95rem; }
-              </style>
-            </head>
-            <body>
-              <h1>Sign in to YouTube Music</h1>
-              <p>This page bridges browser login into the TUI. Google cookies are HttpOnly, so they must be pasted once after sign-in.</p>
-              {{errorBlock}}
-              <ol>
-                <li>Click <strong>Open YouTube Music sign-in</strong> and finish login.</li>
-                <li>On <code>music.youtube.com</code>, open DevTools → <strong>Network</strong>.</li>
-                <li>Refresh, click any request to <code>music.youtube.com</code>.</li>
-                <li>Copy the full <code>Cookie</code> request header value.</li>
-                <li>Paste it below and submit.</li>
-              </ol>
-              <p>
-                <a class="button" href="/signin" target="_blank" rel="noopener">Open YouTube Music sign-in</a>
-              </p>
-              <form method="post" action="/submit">
-                <label for="cookies">Cookie header</label>
-                <textarea id="cookies" name="cookies" placeholder="SAPISID=...; __Secure-1PSID=...; ..." required></textarea>
-                <button type="submit">Save &amp; continue</button>
-              </form>
-              <p class="hint">Cookies are stored only on this machine under ~/.config/yt-music-tui/</p>
-            </body>
-            </html>
-            """;
-    }
-
-    private static string BuildSuccessHtml() => """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="utf-8" />
-          <title>Signed in</title>
-          <style>
-            :root { color-scheme: dark; }
-            body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 36rem; margin: 3rem auto; padding: 0 1rem; background: #111; color: #eee; }
-          </style>
-        </head>
-        <body>
-          <h1>Signed in</h1>
-          <p>You can close this tab and return to the terminal. The TUI is starting.</p>
-        </body>
-        </html>
-        """;
+    private static readonly string[] KnownBrowserBinaries =
+    [
+        "zen", "brave-browser", "brave", "google-chrome", "google-chrome-stable",
+        "chromium", "chromium-browser", "firefox", "microsoft-edge"
+    ];
 
     public static void OpenBrowser(string url)
     {
@@ -244,27 +117,27 @@ public sealed class BrowserAuthFlow : IAsyncDisposable
 
             if (OperatingSystem.IsMacOS())
             {
-                Process.Start("open", url);
-                return;
+                if (TryLaunch("open", [url])) return;
             }
-
-            // Linux / BSD
-            foreach (var opener in new[] { "xdg-open", "gio", "gnome-open", "kde-open" })
+            else
             {
-                try
-                {
-                    Process.Start(new ProcessStartInfo(opener, url)
-                    {
-                        UseShellExecute = false,
-                        RedirectStandardError = true,
-                        RedirectStandardOutput = true
-                    });
+                // Linux/BSD: launch the real browser executable directly rather than going
+                // through xdg-open/kde-open — on some desktop setups (e.g. KDE with a browser
+                // that isn't a "known" system package) those route the URL through a kioexec/
+                // portal detour instead of actually opening a browser tab.
+                var defaultBrowser = ResolveDefaultBrowserCommand();
+                if (defaultBrowser is not null && TryLaunch(defaultBrowser, [url]))
                     return;
-                }
-                catch
+
+                foreach (var binary in KnownBrowserBinaries)
                 {
-                    // try next
+                    if (TryLaunch(binary, [url])) return;
                 }
+
+                if (TryLaunch("xdg-open", [url])) return;
+                if (TryLaunch("gio", ["open", url])) return;
+                if (TryLaunch("gnome-open", [url])) return;
+                if (TryLaunch("kde-open", [url])) return;
             }
 
             Console.WriteLine($"Open this URL manually: {url}");
@@ -275,21 +148,84 @@ public sealed class BrowserAuthFlow : IAsyncDisposable
         }
     }
 
-    private static int FindFreePort()
+    private static bool TryLaunch(string command, string[] args)
     {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
+        try
+        {
+            var psi = new ProcessStartInfo(command)
+            {
+                UseShellExecute = false,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true
+            };
+            foreach (var arg in args) psi.ArgumentList.Add(arg);
+
+            using var proc = Process.Start(psi);
+            return proc is not null;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
-    public async ValueTask DisposeAsync()
+    /// <summary>
+    /// Resolves the user's configured default browser (via xdg-settings + its .desktop
+    /// Exec line) to an executable path, so we can launch it directly instead of relying
+    /// on a desktop URL-open helper that may not handle it correctly.
+    /// </summary>
+    private static string? ResolveDefaultBrowserCommand()
     {
-        if (_listener is null) return;
-        try { _listener.Stop(); } catch { /* ignore */ }
-        _listener.Close();
-        _listener = null;
-        await Task.CompletedTask;
+        try
+        {
+            var psi = new ProcessStartInfo("xdg-settings")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            psi.ArgumentList.Add("get");
+            psi.ArgumentList.Add("default-web-browser");
+
+            using var proc = Process.Start(psi);
+            if (proc is null) return null;
+
+            var desktopFile = proc.StandardOutput.ReadToEnd().Trim();
+            if (!proc.WaitForExit(2000))
+            {
+                try { proc.Kill(); } catch { /* best effort */ }
+                return null;
+            }
+            if (string.IsNullOrEmpty(desktopFile)) return null;
+
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string[] searchDirs =
+            [
+                Path.Combine(home, ".local", "share", "applications"),
+                "/usr/share/applications",
+                "/usr/local/share/applications"
+            ];
+
+            foreach (var dir in searchDirs)
+            {
+                var path = Path.Combine(dir, desktopFile);
+                if (!File.Exists(path)) continue;
+
+                foreach (var line in File.ReadAllLines(path))
+                {
+                    if (!line.StartsWith("Exec=", StringComparison.Ordinal)) continue;
+
+                    var exec = Regex.Replace(line["Exec=".Length..], "%[a-zA-Z%]", "").Trim();
+                    var firstToken = exec.Split(' ', 2)[0].Trim('"');
+                    return string.IsNullOrEmpty(firstToken) ? null : firstToken;
+                }
+            }
+        }
+        catch
+        {
+            // fall through to other strategies
+        }
+
+        return null;
     }
 }

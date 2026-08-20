@@ -54,7 +54,7 @@ static async Task<AuthSession> EnsureAuthenticatedAsync(
         Console.WriteLine($"Not authenticated ({existing.StatusLabel}). Starting browser sign-in…");
     }
 
-    await using var flow = new BrowserAuthFlow(auth);
+    var flow = new BrowserAuthFlow(auth);
     return await flow.RunAsync(ct);
 }
 
@@ -144,8 +144,10 @@ static void PrintHelp()
           --import-cookies <path>   Copy cookie file into config and validate
           --help                    Show this help
 
-        On first run (or expired cookies), the app opens a local page that
-        redirects you to YouTube Music sign-in, then asks for a Cookie header.
+        On first run (or expired cookies), the app opens YouTube Music sign-in
+        directly in your browser, then auto-detects the session from your
+        browser's cookies. If that fails, it asks you to paste the Cookie
+        header instead.
 
         Env:
           YT_MUSIC_COOKIES          Cookie file path
