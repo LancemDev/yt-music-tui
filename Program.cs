@@ -1,9 +1,12 @@
-﻿using Ratatui;
+﻿using YtMusicTui.App;
+using YtMusicTui.Config;
+using YtMusicTui.Services;
 
-using var term = new Terminal();
-term.Clear();
+Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-using var para = new Paragraph("Hello from Ratatui.cs!")
-    .Title("YT Music TUI");
+var config = AppConfig.Load();
+var music = new MockMusicService();
+var player = new MockPlayerService();
 
-term.Draw(para, new Rect(2, 1, 44, 6));
+using var app = new MusicApp(config, music, player);
+await app.RunAsync();
