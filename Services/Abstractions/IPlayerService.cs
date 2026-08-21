@@ -9,6 +9,8 @@ public interface IPlayerService
     TimeSpan Position { get; }
     TimeSpan Duration { get; }
     IReadOnlyList<Track> Queue { get; }
+    IReadOnlyList<ulong> VisualizerLevels { get; }
+    string? LastError { get; }
 
     Task PlayAsync(Track track, CancellationToken ct = default);
     Task PlayQueueAsync(IReadOnlyList<Track> tracks, int startIndex = 0, CancellationToken ct = default);

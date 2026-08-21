@@ -1,34 +1,45 @@
 namespace YtMusicTui.App;
 
-public enum Screen
+public enum LeftFocus
 {
-    Home,
-    Search,
-    Library,
-    Queue
+    Tracks,
+    Playlists
+}
+
+public enum FullScreenMode
+{
+    None,
+    CoverBar,
+    Lyrics
 }
 
 public sealed class AppState
 {
-    public Screen CurrentScreen { get; set; } = Screen.Home;
     public string StatusMessage { get; set; } = "Ready";
     public string SearchQuery { get; set; } = string.Empty;
     public bool IsSearching { get; set; }
+    public bool IsShowingSearchResults { get; set; }
 
-    public int HomeSelectedIndex { get; set; }
-    public int LibrarySelectedIndex { get; set; }
-    public int QueueSelectedIndex { get; set; }
-    public int SearchSelectedIndex { get; set; }
+    public LeftFocus LeftFocus { get; set; } = LeftFocus.Tracks;
+    public FullScreenMode FullScreenMode { get; set; } = FullScreenMode.None;
+    public bool IsSidebarCollapsed { get; set; }
 
-    public IReadOnlyList<Models.Track> HomeTracks { get; set; } = [];
-    public IReadOnlyList<Models.Playlist> LibraryPlaylists { get; set; } = [];
+    public int TracksSelectedIndex { get; set; }
+    public int PlaylistsSelectedIndex { get; set; }
+
+    public IReadOnlyList<Models.Track> LibraryTracks { get; set; } = [];
+    public IReadOnlyList<Models.Track> SearchResults { get; set; } = [];
+    public IReadOnlyList<Models.Playlist> Playlists { get; set; } = [];
     public IReadOnlyList<Models.Track> Queue { get; set; } = [];
-    public IReadOnlyList<Models.Track> SearchTracks { get; set; } = [];
+
+    public IReadOnlyList<Models.Track> DisplayedTracks => IsShowingSearchResults ? SearchResults : LibraryTracks;
 
     public Models.Track? NowPlaying { get; set; }
     public bool IsPlaying { get; set; }
     public TimeSpan Position { get; set; }
     public TimeSpan Duration { get; set; }
+    public IReadOnlyList<ulong> VisualizerLevels { get; set; } = [];
+    public Models.Lyrics? Lyrics { get; set; }
 
     public string AuthLabel { get; set; } = "not signed in";
     public bool IsAuthenticated { get; set; }

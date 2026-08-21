@@ -2,6 +2,7 @@
 using YtMusicTui.Auth;
 using YtMusicTui.Config;
 using YtMusicTui.Services;
+using YtMusicTui.Services.Audio;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
@@ -27,10 +28,27 @@ Console.CancelKeyPress += (_, e) =>
 };
 
 var session = await EnsureAuthenticatedAsync(authService, config, forceLogin: false, cts.Token);
-var music = new MockMusicService();
-var player = new MockPlayerService();
 
-using var app = new MusicApp(config, music, player, session);
+if (session.IsAuthenticated)
+{
+    Console.WriteLine("Preparing playback session (needs Node.js)…");
+    var tokens = await SessionTokenProvider.TryGenerateAsync(cts.Token);
+    if (tokens is { } t)
+    {
+        authService.SaveSessionTokens(t.VisitorData, t.PoToken, session.GeographicalLocation);
+        session = await authService.LoadAsync(cts.Token);
+    }
+    else
+    {
+        Console.WriteLine("Couldn't prepare a playback session — playback will fail (Node.js required).");
+    }
+}
+
+var music = new YouTubeMusicService(session);
+var player = new AudioPlayerService(music);
+var lyrics = new LyricsService();
+
+using var app = new MusicApp(config, music, player, lyrics, session);
 await app.RunAsync(cts.Token);
 
 static async Task<AuthSession> EnsureAuthenticatedAsync(

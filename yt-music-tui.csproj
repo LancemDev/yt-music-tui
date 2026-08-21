@@ -14,6 +14,7 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
     <PackageReference Include="Ratatui.cs" Version="0.3.3" />
     <PackageReference Include="YouTubeMusicAPI" Version="3.0.10" />
+    <PackageReference Include="YouTubeSessionGenerator" Version="1.0.3" />
   </ItemGroup>
 
 </Project>
